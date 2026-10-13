@@ -1,0 +1,59 @@
+name: Deploy (reusable)
+
+# 可重用的部署流程：dev 與 prod 共用同一份步驟，只差環境參數
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      kube-context:
+        required: false
+        type: string
+        default: rancher-desktop           # 明確指定叢集，避免誤部署到別的 context
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    # 叢集在本機（內網），GitHub 雲端 runner 連不到，所以用本機的 self-hosted runner 執行
+    runs-on: [self-hosted, Windows, local-k8s]
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - name: Download rendered manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: manifests
+          path: manifests
+
+      - name: Ensure namespace exists
+        run: kubectl --context ${{ inputs.kube-context }} create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl --context ${{ inputs.kube-context }} apply -f -
+
+      # 金鑰來自 GitHub 環境密鑰（dev / prod 各一把），不寫在 repo 裡
+      - name: Create or update API key secret
+        run: kubectl --context ${{ inputs.kube-context }} -n ${{ inputs.namespace }} create secret generic rack-monitor-secret --from-literal=api-key=${{ secrets.API_KEY }} --dry-run=client -o yaml | kubectl --context ${{ inputs.kube-context }} apply -f -
+
+      - name: Apply manifests
+        run: kubectl --context ${{ inputs.kube-context }} apply -f manifests/${{ inputs.environment }}.yaml
+
+      # 等新版 Pod 全部通過 readiness；逾時代表新版起不來
+      - name: Wait for rollout
+        run: kubectl --context ${{ inputs.kube-context }} -n ${{ inputs.namespace }} rollout status deployment/rack-monitor --timeout=150s
+
+      # 從叢集內部打一次 API，確認服務真的可用
+      - name: Smoke test
+        run: kubectl --context ${{ inputs.kube-context }} -n ${{ inputs.namespace }} run smoke-${{ github.run_id }}-${{ github.run_attempt }} --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- -sf --retry 3 --retry-delay 2 --retry-connrefused http://rack-monitor/api/info
+
+      # 前面任何一步失敗 → 自動回滾到上一個版本
+      - name: Roll back on failure
+        if: failure()
+        run: kubectl --context ${{ inputs.kube-context }} -n ${{ inputs.namespace }} rollout undo deployment/rack-monitor
+
+      - name: Wait for rollback
+        if: failure()
+        run: kubectl --context ${{ inputs.kube-context }} -n ${{ inputs.namespace }} rollout status deployment/rack-monitor --timeout=150s

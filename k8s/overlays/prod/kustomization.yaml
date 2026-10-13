@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rack-prod
+resources:
+  - namespace.yaml
+  - ../../base
+replicas:
+  - name: rack-monitor
+    count: 2
+configMapGenerator:
+  - name: rack-monitor-config
+    literals:
+      - APP_ENV=prod
+      - RACK_THRESHOLD=27.0
+      - DEMO_UNHEALTHY=false

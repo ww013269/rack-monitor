@@ -1,0 +1,120 @@
+name: CI/CD
+
+# PR → 只跑 CI（build + test）
+# push 到 main → CI + 建 image + 掃描 + 部署 dev → 人工核准後部署 prod
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一條分支同時只跑一個部署，避免兩次 push 互相覆蓋
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven                     # 快取 Maven 依賴，加快 pipeline
+
+      - name: Build and run tests
+        run: mvn -B verify
+
+      - name: Upload test reports
+        if: always()                       # 測試失敗時也上傳，方便查原因
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+
+  image:
+    name: Build, Scan & Push Image
+    needs: build-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write                      # 推 image 到 GHCR 需要
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compute image name
+        id: meta
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"   # GHCR 路徑必須小寫
+          IMAGE="ghcr.io/${OWNER}/rack-monitor:${GITHUB_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build -t "${{ steps.meta.outputs.image }}" .
+
+      # 先掃描、後推送：沒通過掃描的 image 根本不會進 registry
+      # 用固定版本的 Trivy 容器（0.69.3），不用 latest，避免供應鏈風險
+      - name: Scan image with Trivy (block on CRITICAL)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.3 image \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --no-progress \
+            "${{ steps.meta.outputs.image }}"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push image
+        run: docker push "${{ steps.meta.outputs.image }}"
+
+      # Build once, deploy many：同一個 image，套上 dev / prod 各自的設定
+      - name: Render manifests for each environment
+        run: |
+          mkdir -p rendered
+          for env in dev prod; do
+            kubectl kustomize "k8s/overlays/${env}" \
+              | sed -e "s|rack-monitor:placeholder|${{ steps.meta.outputs.image }}|g" \
+                    -e "s|VERSION_PLACEHOLDER|${GITHUB_SHA::7}|g" \
+              > "rendered/${env}.yaml"
+          done
+          grep -n "image:" rendered/*.yaml
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifests
+          path: rendered/
+
+  deploy-dev:
+    name: Deploy to dev
+    needs: image
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      namespace: rack-dev
+    secrets: inherit
+
+  deploy-prod:
+    name: Deploy to prod
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod                    # GitHub 設定 prod 環境需人工核准
+      namespace: rack-prod
+    secrets: inherit

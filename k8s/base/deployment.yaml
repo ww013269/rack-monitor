@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rack-monitor
+  labels:
+    app: rack-monitor
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5            # 保留幾版供 rollout undo 回滾
+  selector:
+    matchLabels:
+      app: rack-monitor
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0              # 新 Pod ready 之前，舊 Pod 一個都不拿掉 → 不中斷服務
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: rack-monitor
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: app
+          image: rack-monitor:placeholder        # CI 渲染時換成 ghcr.io/...:<commit SHA>
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_VERSION
+              value: VERSION_PLACEHOLDER         # CI 渲染時換成 commit SHA
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rack-monitor-secret      # 由 pipeline 從 GitHub Secrets 建立，不進 repo
+                  key: api-key
+          envFrom:
+            - configMapRef:
+                name: rack-monitor-config        # 各環境不同的設定（overlay 產生）
+          readinessProbe:                        # 失敗 → 先不導流量給這個 Pod
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:                         # 失敗 → 重啟容器
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

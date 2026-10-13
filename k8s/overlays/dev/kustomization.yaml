@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rack-dev
+resources:
+  - namespace.yaml
+  - ../../base
+replicas:
+  - name: rack-monitor
+    count: 1
+# 設定改變 → ConfigMap 名稱的 hash 改變 → 自動觸發滾動更新
+configMapGenerator:
+  - name: rack-monitor-config
+    literals:
+      - APP_ENV=dev
+      - RACK_THRESHOLD=27.0
+      - DEMO_UNHEALTHY=false          # 改成 true：新版啟動即失敗，示範「壞版本 → 自動回滾」

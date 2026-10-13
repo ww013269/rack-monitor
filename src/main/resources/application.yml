@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: rack-monitor
+
+server:
+  port: 8080
+  shutdown: graceful            # 收到停止訊號時，先把處理中的請求做完（滾動更新不掉請求）
+
+# 以下設定在 K8s 由環境變數覆蓋：APP_VERSION / APP_ENV / RACK_THRESHOLD / API_KEY / DEMO_UNHEALTHY
+app:
+  version: local
+  env: local
+
+rack:
+  threshold: 27.0               # 進風溫度超過此值標記 ALERT
+
+api:
+  key: ""                       # 空字串 = 不檢查（本機開發用）；K8s 由 Secret 注入
+
+demo:
+  unhealthy: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true           # 提供 /actuator/health/liveness 與 /readiness 給 K8s probe
