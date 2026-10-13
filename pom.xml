@@ -19,6 +19,8 @@
 
     <properties>
         <java.version>17</java.version>
+        <!-- Boot 4.1.1 內建 Tomcat 11.0.24 有 CRITICAL CVE（Trivy 擋下），覆寫為已修正版本 -->
+        <tomcat.version>11.0.27</tomcat.version>
     </properties>
 
     <dependencies>
