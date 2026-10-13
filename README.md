@@ -4,6 +4,8 @@
 重點放在**從 push 到上線的整條自動化流程**：測試 → 弱點掃描 → 建 image → 部署 dev → 人工核准 → 部署 prod，
 部署失敗時自動回滾。
 
+> 📖 **[專案導覽](docs/WALKTHROUGH.md)**：每一層的設計說明、實際驗證紀錄與截圖、常見問題。
+
 ## Pipeline 流程
 
 ```mermaid
@@ -54,7 +56,7 @@ PR 只跑 Build & Test；merge 到 main 才會建 image 和部署。
 
 ## 一、本機先跑起來（約 5 分鐘）
 
-需要 JDK 21 與 Maven。
+需要 JDK 17 與 Maven。
 
 ```powershell
 mvn verify                      # 跑測試並打包
