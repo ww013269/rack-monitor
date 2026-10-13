@@ -1,12 +1,12 @@
-# 新手版說明：這個專案到底在做什麼
+# 入門說明：這個專案在做什麼
 
-這份用最白話的方式講，不需要任何背景知識。
-想看技術細節再看 [專案導覽](WALKTHROUGH.md)。
+用正式的專有名詞，搭配白話說明每個東西的作用。
+想看更深的技術細節再看 [專案導覽](WALKTHROUGH.md)。
 
 **目錄**
 
 1. [三句話講完](#1-三句話講完)
-2. [登場角色](#2-登場角色)
+2. [專有名詞與元件](#2-專有名詞與元件)
 3. [C:\actions-runner 是什麼](#3-cactions-runner-是什麼)
 4. [一次性設定：我們做了哪些事](#4-一次性設定我們做了哪些事)
 5. [push 一次之後，發生了什麼](#5-push-一次之後發生了什麼)
@@ -19,221 +19,390 @@
 
 ## 1. 三句話講完
 
-1. 我 push 程式碼，GitHub 就會自動**測試、打包、檢查漏洞**。
-2. 通過後自動**部署到測試環境（dev）**；**正式環境（prod）要我按同意**才會上。
-3. 新版本壞掉的話，會**自動退回舊版**，服務不會中斷。
+1. **CI**：push 程式碼後，GitHub Actions 自動執行**建置、單元測試、建立 container image、弱點掃描**。
+2. **CD**：通過後自動**部署到 dev 環境**；**prod 環境需要人工核准**（approval gate）才會部署。
+3. **Rollback**：新版本沒通過健康檢查，pipeline 會**自動回滾到上一版**，滾動更新過程中服務不中斷。
 
 ---
 
-## 2. 登場角色
+## 2. 專有名詞與元件
 
-把整個流程想成「**做便當 → 檢查 → 送到店裡賣**」。
+### CI/CD 概念
 
-| 角色 | 比喻 | 實際是什麼 |
-|---|---|---|
-| GitHub repo | 食譜本 | 放程式碼的地方 |
-| GitHub Actions | 生產線主管 | 照著步驟清單自動做事 |
-| `ci-cd.yml` | 主管的工作清單 | 寫著「先測試、再打包…」 |
-| GitHub 雲端機器 | 中央廚房 | 測試、打包都在這裡做 |
-| Docker | 封裝機 | 把程式打包成一個「便當盒」 |
-| Docker image | 封好的便當 | 程式 + 執行環境，在哪都能跑 |
-| Trivy | 食安檢驗員 | 檢查便當裡有沒有壞掉的食材（漏洞） |
-| GHCR | 冷凍倉庫 | 存放檢驗合格的便當 |
-| runner | 派駐在店裡的員工 | 你電腦上的程式，負責「上架」 |
-| Kubernetes（K8s） | 店長 | 管理店面：要擺幾份、壞了換掉 |
-| Pod | 架上的一份便當 | 正在執行中的程式 |
-| dev / prod | 試吃區 / 正式販售區 | 測試環境 / 正式環境 |
+**CI（Continuous Integration，持續整合）**
+每次程式碼變更都自動建置和測試，盡早發現問題。
+→ 本專案：測試、打包、掃描、推送 image。
 
-**一句話：** 主管（GitHub Actions）叫中央廚房做便當、檢驗、入庫，再叫店裡的員工（runner）通知店長（K8s）上架。
+**CD（Continuous Delivery / Deployment，持續交付／部署）**
+把通過檢查的版本自動部署到環境上。
+→ 本專案：部署到 dev，核准後部署到 prod。
+
+**Pipeline**
+從程式碼到上線的一整串自動化步驟。
+
+**Environment（環境）**
+同一套程式部署到不同地方：
+- **dev**：開發／測試環境，先驗證
+- **prod**：正式環境，給使用者用
+
+### GitHub Actions
+
+**GitHub Actions**
+GitHub 內建的 CI/CD 平台，依照 repo 裡的設定檔自動執行工作。
+
+**Workflow**
+一份 YAML 設定檔，定義什麼時候觸發、要做哪些事。放在 `.github/workflows/`，GitHub 會自動讀取。
+→ 本專案：`ci-cd.yml`（主流程）、`deploy.yml`（部署流程）。
+
+**Trigger（觸發條件）**
+什麼事件會啟動 workflow。
+→ 本專案：push 到 main、開 Pull Request。
+
+**Job**
+workflow 裡的一個工作單位，在一台機器上執行。Actions 頁面上的每個方塊就是一個 job。
+→ 本專案：Build & Test、Build Scan & Push、Deploy to dev、Deploy to prod。
+
+**Step**
+job 裡的單一步驟，例如執行一個指令。
+
+**`needs`（相依性）**
+指定 job 的先後順序：前一個成功，後一個才會執行。
+
+**Runner**
+實際執行 job 的機器。分成兩種：
+- **GitHub-hosted runner**：GitHub 提供的雲端機器，每次用完就銷毀
+- **Self-hosted runner**：裝在自己機器上的 runner
+
+→ 本專案：CI 用 GitHub-hosted，部署用 self-hosted。
+
+**Artifact**
+job 產生、要傳給後面 job 使用的檔案。
+→ 本專案：渲染好的 K8s manifest。
+
+**Secret**
+加密儲存的敏感資料（密碼、金鑰），執行時才注入，log 裡會被遮蔽。
+→ 本專案：`API_KEY`。
+
+**Required reviewers（核准關卡）**
+environment 的保護規則，指定的人核准後才能部署。
+→ 本專案：prod 需要你核准。
+
+### 容器（Container）
+
+**Container image**
+把應用程式、執行環境（例如 JRE）和相依套件打包成一個不可變的檔案。在任何裝了 container runtime 的地方，執行結果都一樣。
+
+**Container**
+image 執行起來的實體（instance）。
+
+**Docker**
+建立和執行 container 的工具。
+
+**Dockerfile**
+描述如何建立 image 的設定檔。
+→ 本專案：用 multi-stage build，先用 JDK 編譯，最後的 image 只放 JRE 和 jar。
+
+**Container registry**
+存放和發布 image 的服務，類似套件庫。
+→ 本專案：**GHCR**（GitHub Container Registry），網址 `ghcr.io/ww013269/rack-monitor`。
+
+**Image tag**
+image 的版本標籤。
+→ 本專案：用 **commit SHA** 當 tag，每個 image 都能對應回一個 commit。
+
+### 安全掃描
+
+**CVE（Common Vulnerabilities and Exposures）**
+公開漏洞的統一編號，例如 Log4Shell 是 `CVE-2021-44228`。
+
+**Trivy**
+開源的弱點掃描工具（Aqua Security 開發）。比對 image 裡的作業系統套件和應用程式套件版本，跟 CVE 資料庫對照。
+→ 本專案：發現 **CRITICAL** 等級就讓 pipeline 失敗，image 不會被推送。
+
+**Security gate（安全關卡）**
+pipeline 中沒通過就不能往下走的檢查點。
+
+### Kubernetes
+
+**Kubernetes（K8s）**
+container 編排（orchestration）平台：負責排程、維持副本數、自動重啟、滾動更新。
+
+**Cluster / Node**
+cluster 是一整個 K8s 環境，由一或多台 node（機器）組成。
+→ 本專案：Docker Desktop 內建的單節點 cluster。
+
+**kubectl**
+操作 K8s 的命令列工具。
+
+**Context**
+kubectl 要連到哪個 cluster 的設定。
+→ 本專案：每個指令都明確指定 `--context docker-desktop`，避免部署到錯的 cluster。
+
+**Manifest**
+描述 K8s 資源的 YAML 檔。採用**宣告式**：只描述「期望狀態」（例如要跑 2 個副本），K8s 自己負責達成並持續維持。
+
+**Namespace**
+cluster 內的邏輯隔離空間。
+→ 本專案：`rack-dev`、`rack-prod`。
+
+**Pod**
+K8s 最小的部署單位，裡面跑一或多個 container。
+
+**Deployment**
+管理一組 Pod 的資源：要幾個副本（replicas）、用哪個 image、怎麼更新。
+
+**Service**
+給一組 Pod 一個固定的名稱和入口，只把流量導給健康的 Pod。
+
+**ConfigMap / Secret**
+分別存一般設定和敏感資料，以環境變數注入 container。設定和 image 分開，同一個 image 可以用在不同環境。
+
+**Probe（健康檢查）**
+- **Readiness probe**：能不能接流量？失敗 → 不導流量
+- **Liveness probe**：還活著嗎？失敗 → 重啟 container
+
+**Rolling update（滾動更新）**
+逐步用新版 Pod 替換舊版 Pod，過程中服務不中斷。
+
+**Rollback**
+退回上一個版本（`kubectl rollout undo`）。
+
+**Kustomize**
+用 **base**（共用設定）加 **overlay**（各環境差異）管理多環境的 manifest。
 
 ---
 
 ## 3. C:\actions-runner 是什麼
 
-### 白話
+### 一句話
 
-**它是 GitHub 派駐在你電腦上的「員工」。**
+**這是 GitHub Actions 的 self-hosted runner，裝在你的電腦上，負責執行部署 job。**
 
-為什麼需要它？因為你的 K8s 在你電腦裡面，**GitHub 從網路上連不進來**。所以在你電腦上放一個員工，讓**它主動去 GitHub 問有沒有工作**，有的話就在你電腦上執行。
+### 為什麼需要它
+
+部署要對 K8s cluster 下 `kubectl` 指令，但 cluster 在你的電腦裡（內網），**GitHub-hosted runner 在公網，連不進來**。
+
+self-hosted runner 解決這個問題：
 
 ```
-GitHub：有一個部署工作喔
-   ↑ 每幾秒問一次「有我的工作嗎？」
-runner（你電腦上）
-   → 領工作 → 執行 kubectl 指令
-   → 把結果回報給 GitHub
+GitHub（公網）
+   ↑ runner 主動以 HTTPS 連出去詢問：
+   │ 「有沒有符合我 label 的 job？」
+   │ （long polling）
+self-hosted runner（你的電腦）
+   → 收到 job → 在本機執行 kubectl
+   → 把 log 和結果回傳 GitHub
 ```
 
-### 資料夾裡有什麼
+重點：**連線是從內往外（outbound）建立的**，不需要開放任何對外的 port，防火牆後面也能運作。公司內網的 cluster 通常也是用這種方式部署。
+
+### 資料夾內容
 
 | 檔案 | 用途 |
 |---|---|
-| `config.cmd` | **註冊**用：跟 GitHub 說「這台電腦是我的員工」。只執行一次，已經做過了 |
-| `run.cmd` | **上班**用：執行後員工開始等工作。視窗關掉就下班 |
-| `.runner`、`.credentials` | 註冊後拿到的「員工證」，不要刪、不要給別人 |
-| `_work/` | 員工的工作桌，執行工作時的暫存檔放這裡 |
-| `bin/`、`externals/` | 員工程式本身 |
+| `config.cmd` | 把這台機器**註冊**成 repo 的 runner。只需執行一次（已完成） |
+| `run.cmd` | **啟動** runner，開始等待 job。關掉視窗 = runner 離線 |
+| `.runner`、`.credentials` | 註冊後產生的設定和憑證，不能刪、不能外流 |
+| `_work/` | 執行 job 時的工作目錄（下載的 artifact、暫存檔） |
+| `_diag/` | runner 的診斷 log，排查問題用 |
+| `bin/`、`externals/` | runner 程式本體 |
 
-### 我們怎麼裝的
+### 安裝過程
 
-1. 從 GitHub 官方下載 runner 的 zip，解壓到 `C:\actions-runner`
-2. 跟 GitHub 要一組「註冊碼」
-3. 執行 `config.cmd`，用註冊碼註冊，取名 `jimmy-local`，貼上標籤 `local-k8s`
-4. 你執行 `run.cmd` → 出現 `Listening for Jobs` = 員工上班了
+1. 從 GitHub 官方 release 下載 runner（v2.338.0），解壓到 `C:\actions-runner`
+2. 透過 GitHub API 取得一次性的 **registration token**
+3. 執行 `config.cmd`：
+   - 名稱：`jimmy-local`
+   - 自訂 label：`local-k8s`
+   - 系統自動加上：`self-hosted`、`Windows`、`X64`
+4. 執行 `run.cmd` → 顯示 `Listening for Jobs` = runner 上線
 
-### 標籤是做什麼的
+沒有裝成 Windows service，因為 service 帳號讀不到你帳號底下的 `kubectl` 設定（kubeconfig）。
 
-`deploy.yml` 裡寫著：
+### Label 的作用
+
+`deploy.yml` 裡：
 
 ```yaml
 runs-on: [self-hosted, Windows, local-k8s]
 ```
 
-意思是：「這個工作只交給**有這三個標籤**的員工」。你的 runner 剛好有，所以部署工作會交給它。
+GitHub 只會把這個 job 派給**同時具備這三個 label** 的 runner。這樣部署 job 一定在能連到 cluster 的那台機器上執行。
 
-### 你要記得的
+### 安全考量
 
-- **要部署時，`run.cmd` 視窗必須開著**
-- 沒開的話，部署工作會一直排隊等，不會失敗
+public repo 加 self-hosted runner 有風險：別人發 Pull Request 時，可能讓惡意程式碼在你的 runner 上執行。
+→ 已設定**外部貢獻者的 PR 需要核准**才會執行 workflow。
+
+### 要記得的
+
+- 部署時 `run.cmd` 必須在執行中
+- runner 離線時，部署 job 會停在 **Queued** 排隊，不會失敗；runner 上線後自動接手
 
 ---
 
 ## 4. 一次性設定：我們做了哪些事
 
-這些只要做一次，之後每次 push 都自動跑。
+以下只需設定一次，之後每次 push 都會自動執行。
 
-### ① 本機確認程式能跑
+### ① 本機建置與測試
 
-- 用 `mvn verify` 編譯 + 跑測試 → 8 個測試全過
-- 啟動程式，實際打 API → 都正常
+- `mvn verify`：編譯 + 執行單元／整合測試，8 個測試全部通過
+- 啟動應用程式，實際呼叫 API 驗證功能和 health endpoint
 
-**為什麼：** 先確認程式本身沒問題，之後出錯才知道是流程的問題。
+**目的：** 先確認應用程式本身正確，之後 pipeline 出錯時，才能確定是流程設定的問題。
 
-### ② 本機確認能打包
+### ② 本機驗證 container image
 
-- `docker build` 打包成 image
-- `docker run` 跑起來，打 API 正常
-- 確認程式不是用管理員（root）身分跑
+- `docker build` 建立 image
+- `docker run` 啟動 container，呼叫 API 驗證
+- `docker exec ... id` 確認 container 以**非 root 使用者**（UID 10001）執行
 
-**為什麼：** 在本機先抓 Dockerfile 的錯，比推上去再等 GitHub 跑快很多。
+**目的：** 在本機先找出 Dockerfile 的問題，回饋速度比推上 CI 再等結果快得多。
 
-### ③ 在 GitHub 建 repo
+### ③ 建立 GitHub repository
 
-用 `gh repo create` 建立 `ww013269/rack-monitor`。
+用 GitHub CLI：`gh repo create` 建立 `ww013269/rack-monitor`。
 
-### ④ 在 GitHub 設定「不能寫在檔案裡的東西」
+### ④ 設定 Environment、Secret 與安全規則
 
-| 設定 | 為什麼 |
+這些屬於**權限與敏感資料**，不能寫進 repo 的檔案裡，要在 GitHub 上設定：
+
+| 設定 | 目的 |
 |---|---|
-| 建 dev、prod 兩個環境 | 讓部署有「環境」的概念 |
-| prod 要你核准 | 正式環境要有人把關 |
-| 兩個環境各一把 `API_KEY` 密碼 | 密碼不能寫在程式碼裡，大家都看得到 |
-| 陌生人的 PR 要核准才能跑 | 不然別人可以透過 PR 在你電腦上執行指令 |
+| 建立 `dev`、`prod` 兩個 environment | 部署目標分開管理，各自有獨立的規則和 secret |
+| `prod` 設定 required reviewers | 部署到 prod 前必須人工核准（approval gate） |
+| 兩個 environment 各一把 `API_KEY` secret | 敏感資料不進版控；dev 和 prod 隔離，一邊外洩不影響另一邊 |
+| 外部貢獻者的 PR 需核准才執行 workflow | 防止有人透過 PR 在 self-hosted runner 上執行惡意程式碼 |
 
-**為什麼要在 push 之前做：** 不然第一次 push 時，prod 會在沒有核准關卡的狀態下被自動建立。
+**為什麼要在第一次 push 前完成：** workflow 第一次引用 `prod` environment 時，若它不存在，GitHub 會自動建立一個**沒有保護規則**的 prod。
 
-### ⑤ push 程式碼
+### ⑤ Push 並執行第一次 pipeline
 
-`git push` → GitHub 看到 `.github/workflows/ci-cd.yml`，**自動開始跑**。
-`ci-cd.yml` 不用另外設定，放在這個資料夾裡 GitHub 就會找到。
+`git push` 後，GitHub 偵測到 `.github/workflows/` 下的 workflow 檔，依照 trigger 條件自動執行。workflow 檔本身就是設定，不需要在網頁上另外啟用。
 
-這時遇到兩個狀況：
+第一次執行遇到兩個問題：
 
-1. **Maven 下載失敗**（伺服器回 500）→ 外部網站暫時故障，重跑就好
-2. **Trivy 擋下**：Spring Boot 內建的 Tomcat 有 3 個嚴重漏洞 → 在 `pom.xml` 指定用新版 Tomcat → 通過
+1. **Maven Central 回傳 HTTP 500**：外部服務暫時故障，re-run 後恢復
+2. **Trivy 擋下 image**：Spring Boot 4.1.1 內建的 Tomcat 11.0.24 有 3 個 CRITICAL CVE
+   → 在 `pom.xml` 覆寫 `tomcat.version` 為 11.0.27 → 掃描通過
 
-### ⑥ 把 image 設成公開
+第 2 點是 security gate 實際發揮作用的案例：**用升級修正，沒有用 ignore 清單跳過。**
 
-image 存在 GHCR，預設是私人的。設成公開後，K8s 下載 image 時不用帳號密碼。
-（只能在 GitHub 網頁上手動改）
+### ⑥ 將 GHCR package 設為 public
 
-### ⑦ 開啟 Kubernetes
+GHCR 上的 image 預設是 private。設為 public 後，K8s 拉取 image 時不需要設定 **imagePullSecret**（registry 認證）。
+（package 的可見度只能在 GitHub 網頁上修改）
 
-Docker Desktop → Settings → Kubernetes → Enable。
-就這樣，你電腦裡就有一個小型的 K8s 了。
+### ⑦ 啟用 Kubernetes
 
-### ⑧ 安裝 runner
+Docker Desktop → Settings → Kubernetes → Enable Kubernetes。
+會建立一個單節點的本機 cluster，kubectl context 名稱是 `docker-desktop`。
 
-見上面第 3 節。
+### ⑧ 安裝 self-hosted runner
+
+見第 3 節。
 
 ---
 
 ## 5. push 一次之後，發生了什麼
 
-到 GitHub 的 **Actions** 頁面會看到四個方塊，依序執行：
+GitHub 的 **Actions** 頁面會顯示 4 個 job，依照 `needs` 的相依關係依序執行：
 
 ```
-[Build & Test] → [Build, Scan & Push] → [Deploy to dev] → [Deploy to prod]
+[Build & Test]
+  → [Build, Scan & Push Image]
+  → [Deploy to dev]
+  → [Deploy to prod]
 ```
 
-### 方塊 1：Build & Test（GitHub 雲端）
+### Job 1：Build & Test（GitHub-hosted runner）
 
-1. GitHub 開一台雲端電腦
-2. 下載你的程式碼
-3. 安裝 Java 17
-4. 執行 `mvn verify`：編譯 + 跑 8 個測試
+1. 配置一台全新的 Ubuntu runner
+2. `actions/checkout`：取得程式碼
+3. `actions/setup-java`：安裝 JDK 17，並快取 Maven 相依套件
+4. `mvn -B verify`：編譯 + 執行測試
+5. 上傳測試報告（失敗時也會上傳，方便排查）
 
-失敗 → 紅叉，後面全部不跑。
+測試失敗 → job 失敗，後續 job 都不會執行。
 
-### 方塊 2：Build, Scan & Push Image（GitHub 雲端）
+### Job 2：Build, Scan & Push Image（GitHub-hosted runner）
 
-1. **打包**：`docker build`，照 Dockerfile 把程式包成 image
-2. **檢查**：執行 Trivy。Trivy 本身也是一個 image，臨時下載來用，用完就丟。它把 image 裡每個套件的版本，跟公開的漏洞清單比對
-3. **入庫**：通過才 `docker push` 到 GHCR
-4. **準備部署設定**：把 K8s 設定檔裡的 image 地址填好，暫存起來給下一步用
+1. **Build**：`docker build`，tag 為 `ghcr.io/ww013269/rack-monitor:<commit SHA>`
+2. **Scan**：以 container 方式執行 Trivy（固定版本 0.69.3），掃描 image 中的 OS 套件和 Java 相依套件。發現 CRITICAL 且已有修正版的 CVE → exit code 1 → job 失敗
+3. **Push**：掃描通過後才登入 GHCR，`docker push`
+4. **Render manifests**：用 Kustomize 產生 dev、prod 的 manifest，把 image 欄位替換成剛推送的 image，存成 **artifact** 給部署 job 使用
 
-Trivy 發現嚴重漏洞 → 紅叉，**image 不會入庫，也不會部署**。
+**順序是先掃描再推送**：沒通過的 image 不會進 registry，也就不可能被部署。
 
-### 方塊 3：Deploy to dev（你電腦上的 runner）
+### Job 3：Deploy to dev（self-hosted runner）
 
-runner 領到工作後：
+`deploy.yml` 是 **reusable workflow**，dev 和 prod 共用同一份部署步驟：
 
-1. 下載方塊 2 準備好的設定檔
-2. 用 GitHub 給的 `API_KEY` 在 K8s 建立密碼
-3. `kubectl apply`：把設定檔交給 K8s，意思是「請換成新版本」
-4. **K8s 自己去 GHCR 下載 image**（不是 runner 下載的）
-5. `kubectl rollout status`：等新版本健康，最多等 150 秒
-6. 打一次 API 確認真的能用
+1. 下載 Job 2 產生的 manifest artifact
+2. 建立 namespace（已存在則略過）
+3. 從 GitHub environment secret 建立 K8s Secret
+4. `kubectl apply`：套用 manifest，觸發 rolling update
+5. **K8s 自行從 GHCR 拉取 image**（runner 本身不處理 image）
+6. `kubectl rollout status --timeout=150s`：等待新版 Pod 全部 ready
+7. **Smoke test**：在 cluster 內啟動臨時的 curl Pod，呼叫 `/api/info` 確認服務可用
+8. 若上述任一步驟失敗 → 執行 rollback（見第 6 節）
 
-### 方塊 4：Deploy to prod（你電腦上的 runner）
+### Job 4：Deploy to prod（self-hosted runner）
 
-1. **停下來等你核准**（畫面顯示 Waiting for review）
-2. 你按 Approve → 跟方塊 3 一樣的步驟，部署到 prod
+1. 因為 `prod` environment 設有 required reviewers，job 停在 **Waiting for review**
+2. 核准後執行與 Job 3 相同的步驟，部署到 `rack-prod`
 
-dev 失敗的話，這一步直接跳過。
+Job 3 失敗 → Job 4 被 skipped，問題版本不會進到 prod。
 
 ---
 
 ## 6. 怎麼發現問題、怎麼退版
 
-### 發現問題：健康檢查
+### 偵測：Readiness probe
 
-程式裡有一個網址 `/actuator/health/readiness`，程式正常時會回答「OK」。
+應用程式透過 Spring Boot Actuator 提供 `/actuator/health/readiness`，正常時回傳 `{"status":"UP"}`。
 
-K8s **每 5 秒問一次**：
+Deployment 設定 K8s **每 5 秒**呼叫一次：
 
-- 回答 OK → 這個 Pod 健康，可以開始服務
-- 沒回答 / 報錯 → 不健康，**先不讓它服務**
+- 回傳 UP → Pod 標記為 **Ready**，Service 開始導流量給它
+- 失敗或無回應 → Pod 標記為 **Not Ready**，不接收流量
 
-### 換版本的規則
+另有 **liveness probe**：連續失敗時 K8s 會重啟 container，處理程式卡死的狀況。
+
+### 零停機：Rolling update 策略
+
+```yaml
+strategy:
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+```
+
+- `maxSurge: 1`：更新時可以多開 1 個 Pod
+- `maxUnavailable: 0`：可用的 Pod 數量不能低於設定值
+
+更新流程：
 
 ```
-1. 先開一個新版本（舊的不動）
-2. 等新的通過健康檢查
-3a. 健康 → 關掉舊的 ✅
-3b. 不健康 → 舊的不准關，繼續服務
+1. 建立 1 個新版 Pod（舊版不動）
+2. 等待新版 Pod 通過 readiness probe
+3a. Ready → 終止 1 個舊版 Pod，重複直到全部替換 ✅
+3b. 一直 Not Ready → 舊版 Pod 不會被終止，持續服務
 ```
 
-所以就算新版本壞掉，**舊版本一直都在服務**，使用者不會受影響。
+所以新版本有問題時，**舊版本仍持續提供服務**。
 
-### 自動退版
+### 自動 rollback
 
-runner 執行 `kubectl rollout status` 時一直在等：
+runner 執行 `kubectl rollout status --timeout=150s`：
 
-- 150 秒內換好 → 成功 ✅
-- 150 秒到了還沒換好 → 失敗 ❌ → 自動執行 `kubectl rollout undo` = **退回上一版**
+- 150 秒內完成 rollout → 成功，繼續 smoke test
+- 逾時 → step 失敗 → 觸發 `if: failure()` 的步驟：
+  1. `kubectl rollout undo`：回滾到上一個 revision
+  2. `kubectl rollout status`：確認回滾完成
 
-退版後 prod 也不會部署，壞版本完全不會進到正式環境。
+dev 部署失敗 → prod job 被 skipped，問題版本不會進到正式環境。
 
 ---
 
@@ -251,7 +420,7 @@ runner 執行 `kubectl rollout status` 時一直在等：
 **① 打開 Docker Desktop**
 等左下角的 Kubernetes 圖示變綠色。
 
-**② 讓 runner 上班**
+**② 啟動 self-hosted runner**
 開 PowerShell（不是 Git Bash）：
 
 ```powershell
@@ -316,9 +485,9 @@ kubectl --context docker-desktop -n rack-dev port-forward svc/rack-monitor 8081:
    ```
 
 4. 打開 Actions 頁面，邊等邊講：
-   - Build & Test：「在跑測試」
-   - Build, Scan & Push：「打包，用 Trivy 檢查漏洞，通過才存到倉庫」
-   - Deploy to dev：「我電腦上的 runner 在部署到 K8s」
+   - Build & Test：「CI 第一階段：建置並執行測試」
+   - Build, Scan & Push：「建立 container image，用 Trivy 做弱點掃描，通過才推送到 GHCR」
+   - Deploy to dev：「self-hosted runner 用 kubectl 部署到 K8s，等 rolling update 完成」
 5. dev 完成後，用上面的 port-forward 打開 `/api/info`
    → `alertThreshold` 變成 **28.0**，`version` 變成新的
 6. prod 停在 Waiting for review：「正式環境要人工核准」→ 按 Approve
@@ -350,7 +519,7 @@ kubectl --context docker-desktop -n rack-dev port-forward svc/rack-monitor 8081:
 
 3. Actions 頁面：Build & Test ✅ → Build, Scan & Push ❌
 4. 點進去，展開 **Scan image with Trivy** → 看到 `CVE-2021-44228`
-5. 講：「這是 2021 年很有名的 Log4Shell 漏洞。掃描沒過，image 沒存進倉庫，也沒有部署。」
+5. 講：「這是 Log4Shell，CVE-2021-44228，CRITICAL 等級的遠端程式碼執行漏洞。security gate 擋下後，image 沒有推送到 registry，後續部署也不會執行。」
 6. **還原**（一定要做）：
 
    ```bash
@@ -383,10 +552,10 @@ kubectl --context docker-desktop -n rack-dev port-forward svc/rack-monitor 8081:
    - 舊的一直是 `1/1 Running`
    - 新的一直 `Error` / `CrashLoopBackOff`
 
-   講：「新版本壞了，但舊版本一直在服務。」按 Ctrl+C 結束。
+   講：「新版 Pod 沒通過 readiness probe；因為 maxUnavailable 是 0，舊版 Pod 不會被終止，服務不中斷。」按 Ctrl+C 結束。
 6. 約 2.5 分鐘後：Wait for rollout ❌ → Roll back on failure ✅
 7. 再打開 `/api/info` → version 跟第 1 步一樣
-8. 講：「等太久沒成功就自動退版，prod 也不會部署。」
+8. 講：「rollout status 逾時，pipeline 判定失敗，自動執行 rollout undo；dev 失敗，prod job 也被 skipped。」
 9. **還原**（一定要做）：
 
    ```bash
@@ -414,40 +583,51 @@ revert 後 prod 會停在 Waiting for review。
 
 ### 30 秒版
 
-> 我做了一個練習專案，用 GitHub Actions 做 CI/CD。push 程式碼後會自動測試、用 Docker 打包，再用 Trivy 檢查漏洞，通過才存到倉庫。之後自動部署到 Kubernetes 的測試環境，正式環境要人工核准。新版本有問題會自動退回舊版。
+> 我用 GitHub Actions 建了一條完整的 CI/CD pipeline。push 之後，CI 會執行建置和測試、建立 container image，再用 Trivy 做弱點掃描，有 CRITICAL 漏洞就擋下，通過才推送到 GHCR。
+>
+> CD 由 self-hosted runner 用 kubectl 部署到 Kubernetes：dev 自動部署，prod 需要人工核准。部署採用 rolling update 搭配 readiness probe，rollout 逾時會自動 rollback。
 
 ### 加分的真實經驗
 
-> 第一次跑的時候，Trivy 真的在 Spring Boot 內建的 Tomcat 裡找到嚴重漏洞。我是升級版本修好，不是把警告關掉。
+> 第一次執行 pipeline 時，Trivy 在 Spring Boot 4.1.1 內建的 Tomcat 11.0.24 掃到 3 個 CRITICAL CVE。我在 pom.xml 覆寫 Tomcat 版本到 11.0.27 修正，而不是用 ignore 清單跳過。
 
 ### 常被問
 
 **用了哪些工具？**
-GitHub Actions 跑流程、Docker 打包、Trivy 掃漏洞、Kubernetes 部署。
+GitHub Actions 做 CI/CD、Docker 建立 container image、Trivy 做弱點掃描、GHCR 當 container registry、Kubernetes 做部署，用 Kustomize 管理多環境設定。
 
-**Docker 是什麼？**
-把程式和它需要的環境裝成一個包，在哪裡跑結果都一樣。
+**Docker／container 的好處？**
+把應用程式和執行環境打包成不可變的 image，開發、測試、正式環境跑的是同一個 image，避免「我電腦上可以跑」的問題。
 
-**Kubernetes 是什麼？**
-管理這些包的系統。會自動重啟壞掉的、換版本時不中斷服務。
+**Kubernetes 負責什麼？**
+container orchestration：維持期望的副本數、Pod 掛掉自動重建、用 rolling update 做不停機更新。
 
-**怎麼知道新版本好不好？**
-K8s 會定時檢查新版本健康不健康，健康了才換掉舊的。
+**怎麼確認新版本是健康的？**
+readiness probe 定期呼叫 health endpoint，Pod 通過後才接流量；部署後再用 smoke test 從 cluster 內呼叫 API 驗證。
 
-**部署失敗怎麼辦？**
-等太久沒成功，pipeline 會自動退回上一版。
+**部署失敗怎麼處理？**
+`kubectl rollout status` 設 150 秒 timeout，逾時就觸發 `kubectl rollout undo` 自動 rollback。因為 `maxUnavailable: 0`，過程中舊版持續服務。
 
-**為什麼正式環境要人工同意？**
-正式環境影響使用者，最後一關由人把關比較安全。
+**為什麼 prod 要人工核准？**
+prod 直接影響使用者，用 environment 的 required reviewers 做 approval gate，在自動化檢查之外，再加一道人工確認。
+
+**dev 和 prod 有什麼差別？**
+同一個 image（build once, deploy many），差在 namespace、副本數，以及 ConfigMap 和 Secret 的內容。
 
 **部署在哪？**
-練習用的，部署在我電腦上的 Kubernetes。換成雲端，流程和設定檔幾乎一樣，主要是登入叢集的方式不同。
+練習環境是 Docker Desktop 的本機 Kubernetes。換到雲端（例如 AKS、EKS），manifest 和 pipeline 邏輯不變，主要差在 cluster 認證改用 OIDC，以及對外入口改用 Ingress。
 
-**runner 是什麼？為什麼要用？**
-GitHub 派駐在我電腦上的執行程式。因為 K8s 在我電腦裡，GitHub 從外面連不進來，所以讓 runner 主動去 GitHub 領工作。公司內網的環境通常也是這樣做。
+**為什麼用 self-hosted runner？**
+cluster 在內網，GitHub-hosted runner 連不進來。self-hosted runner 主動用 outbound HTTPS 向 GitHub 取得 job，不需要開放對外 port。企業內網環境也常用這種方式。
 
-**密碼怎麼管？**
-存在 GitHub 的密鑰設定，dev 和 prod 各一把，部署時才放進 K8s，不寫在程式碼裡。
+**self-hosted runner 的風險？**
+public repo 上，外部 PR 可能在 runner 上執行惡意程式碼，所以設定了外部貢獻者的 PR 需核准才會執行。正式環境應該用專用、權限受限的 runner。
+
+**Secret 怎麼管理？**
+存在 GitHub environment secrets，dev 和 prod 各自獨立，部署時才建立成 K8s Secret 注入 container，不進版控。
+
+**image tag 為什麼用 commit SHA？**
+SHA 不會被覆蓋，每個 image 都能追溯到對應的 commit，rollback 和排查問題時才準確。不用 `latest`。
 
 ### 答不出來時
 
@@ -461,7 +641,7 @@ GitHub 派駐在我電腦上的執行程式。因為 K8s 在我電腦裡，GitHu
 
 ## 9. 面試後清理
 
-1. runner 視窗按 Ctrl+C，讓它下班
+1. 在 runner 視窗按 Ctrl+C，停止 runner
 2. GitHub repo → **Settings → Actions → Runners** → 移除 `jimmy-local`
 3. 刪掉 K8s 上的程式：
 
