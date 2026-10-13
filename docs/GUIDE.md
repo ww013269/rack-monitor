@@ -1,7 +1,7 @@
 # 入門說明：這個專案在做什麼
 
 用正式的專有名詞，搭配白話說明每個東西的作用。
-想看更深的技術細節再看 [專案導覽](WALKTHROUGH.md)。
+想看更深的技術細節再看 [專案導覽](WALKTHROUGH.md)；Kubernetes 的實際運作與現場 demo 看 [Kubernetes 實戰說明](K8S.md)。
 
 **目錄**
 
@@ -413,7 +413,8 @@ dev 部署失敗 → prod job 被 skipped，問題版本不會進到正式環境
 每次跑完整流程要 **5–10 分鐘**，面試時間寶貴。建議：
 
 1. **主要用已經跑過的紀錄 + 截圖來講**（[專案導覽](WALKTHROUGH.md#實際驗證紀錄)有截圖）
-2. 面試官想看現場的，再做 Demo 1
+2. **Kubernetes 現場導覽**不用等 pipeline，指令立即有反應，最適合現場展示 → [Kubernetes 實戰說明 第 8 節](K8S.md#8-demokubernetes-現場導覽約-5-分鐘)
+3. 面試官想看 pipeline 實際跑，再做 Demo 1
 
 ### 面試前準備（提早 30 分鐘做）
 

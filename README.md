@@ -6,6 +6,8 @@
 
 > 🔰 **[入門說明](docs/GUIDE.md)**：專有名詞說明、設定過程、Demo 步驟與面試問答。
 >
+> ☸️ **[Kubernetes 實戰說明](docs/K8S.md)**：cluster、Pod、Service 實際運作，以及 K8s 現場 demo 步驟。
+>
 > 📖 **[專案導覽](docs/WALKTHROUGH.md)**：每一層的設計說明、實際驗證紀錄與截圖、常見問題。
 
 ## Pipeline 流程
