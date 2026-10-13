@@ -76,15 +76,14 @@ Invoke-RestMethod http://localhost:8080/api/racks/R-01/latest
 
 ## 二、一次性設定（約 40 分鐘）
 
-### 1. Rancher Desktop
+### 1. Docker Desktop
 
-- Preferences → Kubernetes：勾選 **Enable Kubernetes**
-- Container Engine：**dockerd (moby)**
+- Settings → Kubernetes：勾選 **Enable Kubernetes** → Apply
 - 確認叢集可用：
 
 ```powershell
-kubectl config get-contexts     # 要看到 rancher-desktop
-kubectl --context rancher-desktop get nodes
+kubectl config get-contexts     # 要看到 docker-desktop
+kubectl --context docker-desktop get nodes
 ```
 
 ### 2. 建立 GitHub repo 並推上去
@@ -154,8 +153,8 @@ repo → **Settings → Actions → Runners → New self-hosted runner** → 選
 ## 三、查看部署結果
 
 ```powershell
-kubectl --context rancher-desktop -n rack-dev get pods
-kubectl --context rancher-desktop -n rack-dev port-forward svc/rack-monitor 8081:80
+kubectl --context docker-desktop -n rack-dev get pods
+kubectl --context docker-desktop -n rack-dev port-forward svc/rack-monitor 8081:80
 # 另一個視窗
 Invoke-RestMethod http://localhost:8081/api/info
 ```
@@ -196,11 +195,11 @@ push → **Build, Scan & Push Image** 失敗，log 中可看到 CVE-2021-44228�
 ### D. 叢集本身的自我修復與擴展（手動）
 
 ```powershell
-kubectl --context rancher-desktop -n rack-prod get pods
-kubectl --context rancher-desktop -n rack-prod delete pod <其中一個 pod 名稱>
-kubectl --context rancher-desktop -n rack-prod get pods -w          # 看它自動補一個新的
-kubectl --context rancher-desktop -n rack-prod scale deployment/rack-monitor --replicas=3
-kubectl --context rancher-desktop -n rack-prod rollout history deployment/rack-monitor
+kubectl --context docker-desktop -n rack-prod get pods
+kubectl --context docker-desktop -n rack-prod delete pod <其中一個 pod 名稱>
+kubectl --context docker-desktop -n rack-prod get pods -w          # 看它自動補一個新的
+kubectl --context docker-desktop -n rack-prod scale deployment/rack-monitor --replicas=3
+kubectl --context docker-desktop -n rack-prod rollout history deployment/rack-monitor
 ```
 
 ---

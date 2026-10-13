@@ -13,7 +13,7 @@ on:
       kube-context:
         required: false
         type: string
-        default: rancher-desktop           # 明確指定叢集，避免誤部署到別的 context
+        default: docker-desktop            # 明確指定叢集，避免誤部署到別的 context
 
 jobs:
   deploy:
