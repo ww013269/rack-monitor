@@ -13,4 +13,4 @@ configMapGenerator:
     literals:
       - APP_ENV=dev
       - RACK_THRESHOLD=27.0
-      - DEMO_UNHEALTHY=true           # 改成 true：新版啟動即失敗，示範「壞版本 → 自動回滾」
+      - DEMO_UNHEALTHY=false          # 改成 true：新版啟動即失敗，示範「壞版本 → 自動回滾」
